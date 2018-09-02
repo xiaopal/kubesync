@@ -3,7 +3,7 @@ kubesync script
 synchronize configmap & secret between k8s clusters/namespaces
 
 
-examples
+sync examples
 ---
 
 ```
@@ -33,5 +33,52 @@ examples
 
 # secrets
 ./kubesync.sh --to-namespace default-copy secrets
+
+```
+
+sync-by examples
+---
+
+```
+# sync to default-copy
+kubectl apply -f-<<\EOF
+{
+  "apiVersion": "v1",
+  "kind": "Secret",
+  "metadata": {
+    "name": "example-secret",
+    "labels": { 
+      "kubesync/copy-to": "default-copy"
+    }
+  }
+  "type": "Opaque"
+}
+{
+  "apiVersion": "v1",
+  "kind": "Secret",
+  "metadata": {
+    "name": "example-secret-1",
+    "labels": { 
+      "kubesync/copy-to": ""
+    },
+    "annotations": {
+      "kubesync/copy-to": "default-copy, default-copy2"
+    }
+  }
+  "type": "Opaque"
+}
+EOF
+
+# sync example-secret from default to default-copy namespace, example-secret-1 to default-copy and default-copy2
+./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets 
+
+# watch
+./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch
+
+# watch only
+./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch-only
+
+# watch all namespaces (as a cluster service)
+./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch --all-namespaces
 
 ```

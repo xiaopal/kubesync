@@ -4,12 +4,18 @@ set -o pipefail
 
 log(){
   local LEVEL="${1^^}" && shift
-  echo "[ $(date -R) ] $LEVEL - $*" 
+  echo "[ $(date -R) ] $LEVEL - $*" >&2
 }
 
+#kubectl(){
+#  local ARGS='kubectl'; for ARG in "$@"; do ARGS="$ARGS '$ARG'"; done; log DEBUG "$ARGS"
+#  "$(which kubectl)" "$@"
+#}
+
 kubesync(){
-  local FROM_ARGS=() TO_ARGS=() FETCH_ARGS=(-o name) ARG ARG_VAL \
-    FROM_CONFIG TO_CONFIG FROM_NAMESPACE TO_NAMESPACE INCLUDE WATCH_LIST WATCH_ONLY SYNC_PRUNE OWNER_REFS TO_NAMESPACE_LABEL
+  local FETCH_ARGS=(-o 'custom-columns=NAME:.metadata.name,KIND:.kind,APIVERSION:.apiVersion,NAMESPACE:.metadata.namespace' --no-headers) \
+    FROM_ARGS=() TO_ARGS=() ARG ARG_VAL FROM_CONFIG TO_CONFIG FROM_NAMESPACE TO_NAMESPACE INCLUDE INCLUDE_NAMESPACE WATCH_LIST WATCH_ONLY \
+    SYNC_PRUNE OWNER_REFS SYNC_BY_LABEL SYNC_ALL_NAMESPACES
   while ARG="$1" && shift; do
     case "$ARG" in
     "--from-config"|"--from")
@@ -37,6 +43,9 @@ kubesync(){
     "--include")
       INCLUDE="$1" && shift || return 1
       ;;
+    "--include-namespace")
+      INCLUDE_NAMESPACE="$1" && shift || return 1
+      ;;
     "--owner-refs")
       OWNER_REFS='Y'
       ;;
@@ -49,8 +58,12 @@ kubesync(){
     "--watch-only")
       WATCH_ONLY='Y'
       ;;
-    "--to-namespace-label")
-      TO_NAMESPACE_LABEL="$1" && shift || return 1
+    "--sync-by")
+      SYNC_BY_LABEL="$1" && shift || return 1
+      FETCH_ARGS=("${FETCH_ARGS[@]}" -l "$SYNC_BY_LABEL")
+      ;;
+    "--all-namespaces")
+      SYNC_ALL_NAMESPACES='Y'
       ;;
     "--")
       FETCH_ARGS=("${FETCH_ARGS[@]}" "$@")
@@ -63,46 +76,94 @@ kubesync(){
   done
   FROM_CONFIG="${FROM_CONFIG:-$KUBECONFIG}"
   TO_CONFIG="${TO_CONFIG:-$KUBECONFIG}"
-  [ ! -z "$FROM_NAMESPACE" ] && FROM_ARGS=(--namespace "$FROM_NAMESPACE" "${FROM_ARGS[@]}")
-  [ ! -z "$TO_NAMESPACE" ] && TO_ARGS=(--namespace "$TO_NAMESPACE" "${TO_ARGS[@]}")
 
-  [ -z "$OWNER_REFS" ] || [ "$FROM_CONFIG" == "$TO_CONFIG" ] || {
+  if [ ! -z "$SYNC_BY_LABEL" ]; then
+    [ ! -z "$OWNER_REFS" ] || {
+      log ERR '--sync-by require --owner-refs'
+      return 1
+    }
+  else
+    [ "$FROM_CONFIG" == "$TO_CONFIG" ] && [ "$FROM_NAMESPACE" == "$TO_NAMESPACE" ] && {
+      log ERR 'require diffent cluster/namespaces without --sync-by'
+      return 1
+    }
+    [ ! -z "$SYNC_ALL_NAMESPACES" ] && {
+      log ERR '--all-namespaces require --sync-by'
+      return 1
+    }
+  fi
+  [ ! -z "$SYNC_PRUNE" ] && {
+    [ ! -z "$TO_NAMESPACE" ] || {
+      log ERR '--prune require --to-namespace'
+      return 1
+    }
+    [ ! -z "$OWNER_REFS" ] && {
+      log WARN '--owner-refs with --prune may not useful'
+    }
+  }
+  [ ! -z "$OWNER_REFS" ] && [ "$FROM_CONFIG" != "$TO_CONFIG" ] && {
     log ERR '--owner-refs require same cluster'
     return 1
   }
-  [ ! -z "$SYNC_PRUNE" ] && [ ! -z "$OWNER_REFS" ] && {
-    log WARN '--owner-refs with --prune may not useful'
-  }
 
-  fetch_exec(){
-    local TARGET_SEQ=0 TARGET_TYPE TARGET_NAME
-    while IFS='/' read -r TARGET_TYPE TARGET_NAME; do
-      [ ! -z "$TARGET_TYPE" ] && [ ! -z "$TARGET_NAME" ] || continue
+  [ ! -z "$SYNC_ALL_NAMESPACES" ] && FROM_NAMESPACE=""
+  [ ! -z "$FROM_CONFIG" ] && FROM_ARGS=(--kubeconfig "$FROM_CONFIG" "${FROM_ARGS[@]}")
+  [ ! -z "$TO_CONFIG" ] && TO_ARGS=(--kubeconfig "$TO_CONFIG" "${TO_ARGS[@]}")
+  [ ! -z "$FROM_NAMESPACE" ] && FROM_ARGS=(--namespace "$FROM_NAMESPACE" "${FROM_ARGS[@]}")
+  [ ! -z "$TO_NAMESPACE" ] && TO_ARGS=(--namespace "$TO_NAMESPACE" "${TO_ARGS[@]}")
+
+  visit_fetch(){
+    local TARGET_SEQ=0 TARGET_NAME TARGET_KIND TARGET_APIVERSION TARGET_NAMESPACE TARGET_GROUP TARGET_VERSION TARGET_TYPE TARGET
+    while read -r TARGET_NAME TARGET_KIND TARGET_APIVERSION TARGET_NAMESPACE; do
+      [ ! -z "$TARGET_KIND" ] && [ ! -z "$TARGET_APIVERSION" ] && [ ! -z "$TARGET_NAME" ] || continue
+      [ -z "$INCLUDE_NAMESPACE" ] || [ -z "$TARGET_NAMESPACE" ] || [[ "$TARGET_NAMESPACE" == $INCLUDE_NAMESPACE ]] || continue
       [ -z "$INCLUDE" ] || [[ "$TARGET_NAME" == $INCLUDE ]] || continue
-      local TARGET="$TARGET_TYPE/$TARGET_NAME"
-      TARGET="$TARGET" TARGET_SEQ="$TARGET_SEQ" TARGET_TYPE="$TARGET_TYPE" TARGET_NAME="$TARGET_NAME" \
-      "$@" "$TARGET" || return 1
+      IFS='/' read -r TARGET_GROUP TARGET_VERSION <<<"$TARGET_APIVERSION" || continue
+      [ ! -z "$TARGET_VERSION" ] || { TARGET_VERSION="$TARGET_GROUP"; TARGET_GROUP=""; }
+      TARGET_TYPE="$TARGET_KIND.$TARGET_VERSION.$TARGET_GROUP"
+      TARGET="$TARGET_TYPE/$TARGET_NAME"
+      (( TARGET_SEQ ++ ))
+      [ ! -z "$1" ] || {
+        echo "$TARGET_NAME $TARGET_KIND $TARGET_APIVERSION $TARGET_NAMESPACE"
+        continue
+      }
+      TARGET="$TARGET" \
+      TARGET_SEQ="$TARGET_SEQ" \
+      TARGET_KIND="$TARGET_KIND" \
+      TARGET_APIVERSION="$TARGET_APIVERSION" \
+      TARGET_TYPE="$TARGET_TYPE" \
+      TARGET_NAME="$TARGET_NAME" \
+      TARGET_NAMESPACE="$TARGET_NAMESPACE" \
+      "$@" || return 1
     done
   }
 
+  strip_namespace(){
+    echo "$TARGET_NAME $TARGET_KIND $TARGET_APIVERSION"
+  }
+
+
   do_prune(){
     [ ! -z "$SYNC_PRUNE" ] || {
-      log INFO "resource deleted but --prune not specified, ignored: $TARGET"
+      [ ! -z "$SYNC_BY_LABEL" ] || log INFO "resource deleted but --prune not specified, ignored: $TARGET"
       return 0
     }
-    KUBECONFIG="$TO_CONFIG" kubectl delete "${TO_ARGS[@]}" --ignore-not-found "$TARGET" || return 1
+    log INFO "prune $TARGET"
+    kubectl delete "${TO_ARGS[@]}" --ignore-not-found "$TARGET" || return 1
   }
 
   do_sync(){
-    local STAGE="$1" && [ ! -z "$STAGE" ] || {
-      STAGE="$(mktemp)" && log INFO "staging to: $STAGE" 
+    local STAGE_DIR="$1" STAGE="$1/SYNC" && [ ! -z "$STAGE_DIR" ] || {
+      log INFO "staging dir missed"
+      return 1
     }
-    KUBECONFIG="$FROM_CONFIG" kubectl get "${FROM_ARGS[@]}" --ignore-not-found -o json "$TARGET" | jq -s '.' >"$STAGE" || return 1
+    local SYNC_ARGS=("${FROM_ARGS[@]}"); [ ! -z "$FROM_NAMESPACE" ] || SYNC_ARGS=("${SYNC_ARGS[@]}" --namespace "$TARGET_NAMESPACE")
+    kubectl get "${SYNC_ARGS[@]}" --ignore-not-found -o json "$TARGET" | jq -s '.' >"$STAGE" || return 1
     jq -e 'length > 0' "$STAGE" >/dev/null || {
       do_prune "$@" || return 1
       return 0
     }
-    local FILTER='| . * {
+    local FILTER='. * {
         metadata: {
           labels: {
             "kubesync.xiaopal.github.com/from-namespace": .metadata.namespace,
@@ -123,8 +184,7 @@ kubesync(){
           }]
         } 
       }'
-
-    FILTER="$FILTER"'|del(
+    FILTER="$FILTER"'| .metadata.namespace as $namespace |del(
         .status,
         .metadata.namespace,
         .metadata.uid,
@@ -134,40 +194,83 @@ kubesync(){
         .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"],
         .metadata.finalizers
       )'
-    # [ ! -z "$TO_NAMESPACE_LABEL" ] && FILTER="$FILTER"'| '
-    
-    jq -e '.[]'"$FILTER" "$STAGE" | KUBECONFIG="$TO_CONFIG" kubectl apply "${TO_ARGS[@]}" -f- || return 1
+    [ ! -z "$SYNC_BY_LABEL" ] || {
+      log INFO "sync $TARGET: $TARGET_NAMESPACE -> $TO_NAMESPACE"
+      jq -e '.[]'"|$FILTER" "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
+      return 0
+    }  
+    FILTER="$FILTER"'|del(
+      .metadata.labels[env.SYNC_BY_LABEL],
+      .metadata.annotations[env.SYNC_BY_LABEL],
+      .metadata.annotations[env.SYNC_BY_LABEL+".kubesync"]
+    )'
+    export SYNC_BY_LABEL
+    export SYNC_CHECKSUM="$(jq -Sc "map($FILTER)" "$STAGE" | md5sum | cut -d' ' -f-1)"
+    export SYNC_STATE="$(jq -Sc '.[]|.metadata.namespace as $namespace | { 
+          expect: ((.metadata.labels[env.SYNC_BY_LABEL]//"" | split("\\s*,\\s*";"")) + (.metadata.annotations[env.SYNC_BY_LABEL]//"" | split("\\s*,\\s*";"")) 
+            | map(select(length>0 and . != $namespace)) | unique), 
+          present: (.metadata.annotations[env.SYNC_BY_LABEL+".kubesync"]//"" | split(":")[1]//"" | split("\\s*,\\s*";"") 
+            | map(select(length>0 and . != $namespace)) | unique),
+          checksum: (.metadata.annotations[env.SYNC_BY_LABEL+".kubesync"]//"" | split(":")[0]//"")
+        } | .checksum as $checksum | . + {
+          destroy: (.present - .expect),
+          create: (.expect - .present),
+          update: (.present - (.present - .expect) | map(select(env.SYNC_CHECKSUM != $checksum))),
+          unchange: (.present - (.present - .expect) | map(select(env.SYNC_CHECKSUM == $checksum)))
+        }' "$STAGE")"
+
+    jq -e '.create + .update + .destroy | length > 0'<<<"$SYNC_STATE">/dev/null || return 0
+    log INFO "sync $TARGET: $TARGET_NAMESPACE -> $(jq -r '"+[\(
+        .create | join(","))], -[\(
+        .destroy | join(","))], #[\(
+        .update |join(","))], =[\(
+        .unchange | join(","))]"'<<<"$SYNC_STATE") "
+
+    jq -e '.create + .update | length == 0'<<<"$SYNC_STATE">/dev/null || \
+    jq --argjson state "$SYNC_STATE" -e '.[]'"|$FILTER"'
+      | .metadata.namespace = ($state.create[], $state.update[])' "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
+
+    jq -e '.destroy | length == 0'<<<"$SYNC_STATE">/dev/null || \
+    jq --argjson state "$SYNC_STATE" -e '.[]'"|$FILTER"'
+      | .metadata.namespace = ($state.destroy[])' "$STAGE" | kubectl delete "${TO_ARGS[@]}" --ignore-not-found -f- || return 1
+
+    kubectl patch "${SYNC_ARGS[@]}" "$TARGET" -p "$(jq -c '{
+        metadata: {
+          annotations: {
+            (env.SYNC_BY_LABEL+".kubesync"):"\(env.SYNC_CHECKSUM):\(.expect|join(","))"
+          }
+        }
+      }'<<<"$SYNC_STATE")" || return 1
   }
 
+  local LIST_ARGS=("${FROM_ARGS[@]}"); [ ! -z "$SYNC_ALL_NAMESPACES" ] && LIST_ARGS=("${LIST_ARGS[@]}" --all-namespaces)
   [ ! -z "$WATCH_ONLY" ] || (
-      export FROM_FETCH="$(mktemp)" TO_FETCH="$(mktemp)" SYNC_STAGE="$(mktemp)" && trap "rm -f '$FROM_FETCH' '$TO_FETCH' '$SYNC_STAGE'" EXIT
+      export SYNC_STAGE="$(mktemp -d)" && trap "rm -rf '$SYNC_STAGE'" EXIT
+      export FROM_FETCH="$SYNC_STAGE/FROM" TO_FETCH="$SYNC_STAGE/TO"
 
-      KUBECONFIG="$FROM_CONFIG" kubectl get "${FROM_ARGS[@]}" --ignore-not-found "${FETCH_ARGS[@]}" | fetch_exec echo >"$FROM_FETCH" || {
+      kubectl get "${LIST_ARGS[@]}" --ignore-not-found "${FETCH_ARGS[@]}" | visit_fetch >"$FROM_FETCH" || {
         log ERR "Failed to fetch src resources"
         exit 1
       }
-      KUBECONFIG="$TO_CONFIG" kubectl get "${TO_ARGS[@]}" --ignore-not-found "${FETCH_ARGS[@]}" | fetch_exec echo >"$TO_FETCH" || {
-        log ERR "Failed to fetch dest resources"
-        exit 1
-      }
-      log INFO "sync resources..."
-      fetch_exec do_sync "$SYNC_STAGE" <"$FROM_FETCH" || {
+      visit_fetch do_sync "$SYNC_STAGE" <"$FROM_FETCH" || {
         log ERR "Failed to sync resources"
         exit 1
       }
       [ -z "$SYNC_PRUNE" ] && exit 0
-      log INFO "prune resources..."
-      comm -13 <(sort -u <"$FROM_FETCH") <(sort -u <"$TO_FETCH") | fetch_exec do_prune "$SYNC_STAGE" || {
+      kubectl get "${TO_ARGS[@]}" --ignore-not-found "${FETCH_ARGS[@]}" | visit_fetch strip_namespace >"$TO_FETCH" || {
+        log ERR "Failed to fetch dest resources"
+        exit 1
+      }
+      comm -13 <(visit_fetch strip_namespace <"$FROM_FETCH"|sort -u) <(sort -u <"$TO_FETCH") | visit_fetch do_prune "$SYNC_STAGE" || {
         log ERR "Failed to prune resources"
         exit 1
       }
     ) || return 1
 
-  [ -z "$WATCH_LIST" ] && [ -z "$WATCH_ONLY" ] || ( 
-      export WAIT_STAGE="$(mktemp)" && trap "rm -f '$WAIT_STAGE'" EXIT
-      log INFO "watching resources..."
-      KUBECONFIG="$FROM_CONFIG" kubectl get "${FROM_ARGS[@]}" --watch-only "${FETCH_ARGS[@]}" | \
-      fetch_exec do_sync "$WAIT_STAGE" || {
+  [ -z "$WATCH_LIST" ] && [ -z "$WATCH_ONLY" ] || (
+      export WAIT_STAGE="$(mktemp -d)" && trap "rm -rf '$WAIT_STAGE'" EXIT
+      log INFO "watching resources...${SYNC_ALL_NAMESPACES:+(all namespaces)}"
+      visit_fetch do_sync "$WAIT_STAGE" < <(kubectl get "${LIST_ARGS[@]}" --watch-only "${FETCH_ARGS[@]}") || {
         log ERR "Failed to sync resources"
         exit 1
       }
