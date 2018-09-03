@@ -23,7 +23,7 @@ sync examples
 ./kubesync.sh --from-namespace default --to-namespace  --include 'config-*' -l label=val --owner-refs configmaps
 
 # between clusters
-./kubesync.sh --from-config ~/.kube/config1 --to-config ~/.kube/config2  --include 'config-*' -l label=val -- configmaps
+./kubesync.sh --from ~/.kube/config1 --to ~/.kube/config2  --include 'config-*' -l label=val -- configmaps
 
 # --watch
 ./kubesync.sh --from-namespace default --to-namespace default-copy --watch -- configmaps
@@ -36,7 +36,7 @@ sync examples
 
 ```
 
-sync-by examples
+`--by-label` examples
 ---
 
 ```
@@ -70,15 +70,15 @@ kubectl apply -f-<<\EOF
 EOF
 
 # sync example-secret from default to default-copy namespace, example-secret-1 to default-copy and default-copy2
-./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets 
+./kubesync.sh --namespace default --by-label 'kubesync/copy-to' --owner-refs secrets 
 
 # watch
-./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch
+./kubesync.sh --namespace default --by-label 'kubesync/copy-to' --owner-refs secrets --watch
 
 # watch only
-./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch-only
+./kubesync.sh --namespace default --by-label 'kubesync/copy-to' --owner-refs secrets --watch-only
 
 # watch all namespaces (as a cluster service)
-./kubesync.sh --namespace default --sync-by 'kubesync/copy-to' --owner-refs secrets --watch --all-namespaces
+./kubesync.sh --namespace default --by-label 'kubesync/copy-to' --owner-refs secrets --watch --all-namespaces
 
 ```

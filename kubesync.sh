@@ -14,14 +14,26 @@ log(){
 
 kubesync(){
   local FETCH_ARGS=(-o 'custom-columns=NAME:.metadata.name,KIND:.kind,APIVERSION:.apiVersion,NAMESPACE:.metadata.namespace' --no-headers) \
-    FROM_ARGS=() TO_ARGS=() ARG ARG_VAL FROM_CONFIG TO_CONFIG FROM_NAMESPACE TO_NAMESPACE INCLUDE INCLUDE_NAMESPACE WATCH_LIST WATCH_ONLY \
-    SYNC_PRUNE OWNER_REFS SYNC_BY_LABEL SYNC_ALL_NAMESPACES
+    FROM_ARGS=() TO_ARGS=() ARG ARG_VAL \
+    FROM_CONFIG="$KUBESYNC_FROM" \
+    TO_CONFIG="$KUBESYNC_TO" \
+    FROM_NAMESPACE="$KUBESYNC_FROM_NAMESPACE" \
+    TO_NAMESPACE="$KUBESYNC_TO_NAMESPACE" \
+    INCLUDE="$KUBESYNC_INCLUDE" \
+    INCLUDE_NAMESPACE="$KUBESYNC_INCLUDE_NAMESPACE" \
+    WATCH_LIST="$KUBESYNC_WATCH" \
+    WATCH_ONLY="$KUBESYNC_WATCH_ONLY" \
+    SYNC_PRUNE="$KUBESYNC_PRUNE" \
+    OWNER_REFS="$KUBESYNC_OWNER_REFS" \
+    SYNC_BY_LABEL="$KUBESYNC_BY_LABEL" \
+    SYNC_ALL_NAMESPACES="$KUBESYNC_ALL_NAMESPACES"
+
   while ARG="$1" && shift; do
     case "$ARG" in
-    "--from-config"|"--from")
+    "--from-kubeconfig"|"--from-config"|"--from")
       FROM_CONFIG="$1" && shift || return 1
       ;;
-    "--to-config"|"--to")
+    "--to-kubeconfig"|"--to-config"|"--to")
       TO_CONFIG="$1" && shift || return 1
       ;;
     "--kubeconfig")
@@ -58,7 +70,7 @@ kubesync(){
     "--watch-only")
       WATCH_ONLY='Y'
       ;;
-    "--sync-by")
+    "--sync-by"|"--by-label")
       SYNC_BY_LABEL="$1" && shift || return 1
       FETCH_ARGS=("${FETCH_ARGS[@]}" -l "$SYNC_BY_LABEL")
       ;;
@@ -79,16 +91,16 @@ kubesync(){
 
   if [ ! -z "$SYNC_BY_LABEL" ]; then
     [ ! -z "$OWNER_REFS" ] || {
-      log ERR '--sync-by require --owner-refs'
+      log ERR '--by-label require --owner-refs'
       return 1
     }
   else
     [ "$FROM_CONFIG" == "$TO_CONFIG" ] && [ "$FROM_NAMESPACE" == "$TO_NAMESPACE" ] && {
-      log ERR 'require diffent cluster/namespaces without --sync-by'
+      log ERR 'require diffent cluster/namespaces without --by-label'
       return 1
     }
     [ ! -z "$SYNC_ALL_NAMESPACES" ] && {
-      log ERR '--all-namespaces require --sync-by'
+      log ERR '--all-namespaces require --by-label'
       return 1
     }
   fi
