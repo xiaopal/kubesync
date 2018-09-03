@@ -21,12 +21,15 @@ kubesync(){
     TO_NAMESPACE="$KUBESYNC_TO_NAMESPACE" \
     INCLUDE="$KUBESYNC_INCLUDE" \
     INCLUDE_NAMESPACE="$KUBESYNC_INCLUDE_NAMESPACE" \
+    INCLUDE_REGEX="$KUBESYNC_INCLUDE_REGEX" \
+    INCLUDE_NAMESPACE_REGEX="$KUBESYNC_INCLUDE_NAMESPACE_REGEX" \
     WATCH_LIST="$KUBESYNC_WATCH" \
     WATCH_ONLY="$KUBESYNC_WATCH_ONLY" \
     SYNC_PRUNE="$KUBESYNC_PRUNE" \
     OWNER_REFS="$KUBESYNC_OWNER_REFS" \
     SYNC_BY_LABEL="$KUBESYNC_BY_LABEL" \
-    SYNC_ALL_NAMESPACES="$KUBESYNC_ALL_NAMESPACES"
+    SYNC_ALL_NAMESPACES="$KUBESYNC_ALL_NAMESPACES" \
+    SYNC_WITH_PATCH="$KUBESYNC_WITH_PATCH"
 
   while ARG="$1" && shift; do
     case "$ARG" in
@@ -58,6 +61,12 @@ kubesync(){
     "--include-namespace")
       INCLUDE_NAMESPACE="$1" && shift || return 1
       ;;
+    "--include-regex")
+      INCLUDE_REGEX="$1" && shift || return 1
+      ;;
+    "--include-namespace-regex")
+      INCLUDE_NAMESPACE_REGEX="$1" && shift || return 1
+      ;;
     "--owner-refs")
       OWNER_REFS='Y'
       ;;
@@ -76,6 +85,9 @@ kubesync(){
       ;;
     "--all-namespaces")
       SYNC_ALL_NAMESPACES='Y'
+      ;;
+    "--with-patch"|"--patch")
+      SYNC_WITH_PATCH="$1" && shift || return 1
       ;;
     "--")
       FETCH_ARGS=("${FETCH_ARGS[@]}" "$@")
@@ -116,6 +128,12 @@ kubesync(){
   [ ! -z "$OWNER_REFS" ] && [ "$FROM_CONFIG" != "$TO_CONFIG" ] && {
     log ERR '--owner-refs require same cluster'
     return 1
+  } 
+  [ ! -z "$SYNC_WITH_PATCH" ] && {
+    SYNC_WITH_PATCH="$(jq -nc "($SYNC_WITH_PATCH)|objects"|head -1)" && [ ! -z "$SYNC_WITH_PATCH" ] || {
+      log ERR 'illegal --with-patch value'
+      return 1
+    } 
   }
 
   [ ! -z "$SYNC_ALL_NAMESPACES" ] && FROM_NAMESPACE=""
@@ -128,8 +146,13 @@ kubesync(){
     local TARGET_SEQ=0 TARGET_NAME TARGET_KIND TARGET_APIVERSION TARGET_NAMESPACE TARGET_GROUP TARGET_VERSION TARGET_TYPE TARGET
     while read -r TARGET_NAME TARGET_KIND TARGET_APIVERSION TARGET_NAMESPACE; do
       [ ! -z "$TARGET_KIND" ] && [ ! -z "$TARGET_APIVERSION" ] && [ ! -z "$TARGET_NAME" ] || continue
+
+      # filter by pattern
       [ -z "$INCLUDE_NAMESPACE" ] || [ -z "$TARGET_NAMESPACE" ] || [[ "$TARGET_NAMESPACE" == $INCLUDE_NAMESPACE ]] || continue
+      [ -z "$INCLUDE_NAMESPACE_REGEX" ] || [ -z "$TARGET_NAMESPACE" ] || [[ "$TARGET_NAMESPACE" =~ $INCLUDE_NAMESPACE_REGEX ]] || continue
       [ -z "$INCLUDE" ] || [[ "$TARGET_NAME" == $INCLUDE ]] || continue
+      [ -z "$INCLUDE_REGEX" ] || [[ "$TARGET_NAME" =~ $INCLUDE_REGEX ]] || continue
+
       IFS='/' read -r TARGET_GROUP TARGET_VERSION <<<"$TARGET_APIVERSION" || continue
       [ ! -z "$TARGET_VERSION" ] || { TARGET_VERSION="$TARGET_GROUP"; TARGET_GROUP=""; }
       TARGET_TYPE="$TARGET_KIND.$TARGET_VERSION.$TARGET_GROUP"
@@ -206,6 +229,7 @@ kubesync(){
         .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"],
         .metadata.finalizers
       )'
+    [ ! -z "$SYNC_WITH_PATCH" ] && FILTER="$FILTER|.*($SYNC_WITH_PATCH)"
     [ ! -z "$SYNC_BY_LABEL" ] || {
       log INFO "sync $TARGET: $TARGET_NAMESPACE -> $TO_NAMESPACE"
       jq -e '.[]'"|$FILTER" "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
