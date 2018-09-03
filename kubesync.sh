@@ -129,12 +129,6 @@ kubesync(){
     log ERR '--owner-refs require same cluster'
     return 1
   } 
-  [ ! -z "$SYNC_WITH_PATCH" ] && {
-    SYNC_WITH_PATCH="$(jq -nc "($SYNC_WITH_PATCH)|objects"|head -1)" && [ ! -z "$SYNC_WITH_PATCH" ] || {
-      log ERR 'illegal --with-patch value'
-      return 1
-    } 
-  }
 
   [ ! -z "$SYNC_ALL_NAMESPACES" ] && FROM_NAMESPACE=""
   [ ! -z "$FROM_CONFIG" ] && FROM_ARGS=(--kubeconfig "$FROM_CONFIG" "${FROM_ARGS[@]}")
@@ -229,7 +223,7 @@ kubesync(){
         .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"],
         .metadata.finalizers
       )'
-    [ ! -z "$SYNC_WITH_PATCH" ] && FILTER="$FILTER|.*($SYNC_WITH_PATCH)"
+    [ ! -z "$SYNC_WITH_PATCH" ] && FILTER="$FILTER|$SYNC_WITH_PATCH"
     [ ! -z "$SYNC_BY_LABEL" ] || {
       log INFO "sync $TARGET: $TARGET_NAMESPACE -> $TO_NAMESPACE"
       jq -e '.[]'"|$FILTER" "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
