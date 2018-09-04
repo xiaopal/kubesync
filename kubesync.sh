@@ -29,6 +29,7 @@ kubesync(){
     OWNER_REFS="$KUBESYNC_OWNER_REFS" \
     SYNC_BY_LABEL="$KUBESYNC_BY_LABEL" \
     SYNC_ALL_NAMESPACES="$KUBESYNC_ALL_NAMESPACES" \
+    SYNC_REPLACE="$KUBESYNC_REPLACE" \
     SYNC_WITH_PATCH="$KUBESYNC_WITH_PATCH"
 
   while ARG="$1" && shift; do
@@ -72,6 +73,9 @@ kubesync(){
       ;;
     "--prune")
       SYNC_PRUNE='Y'
+      ;;
+    "--replace")
+      SYNC_REPLACE='Y'
       ;;
     "--watch")
       WATCH_LIST='Y'
@@ -224,9 +228,20 @@ kubesync(){
         .metadata.finalizers
       )'
     [ ! -z "$SYNC_WITH_PATCH" ] && FILTER="$FILTER|$SYNC_WITH_PATCH"
+
+    do_apply(){
+      if [ ! -z "$SYNC_REPLACE" ]; then
+        local REPLACE_STAGE="$STAGE.replace" && cat>"$REPLACE_STAGE" || return 1
+        kubectl replace "${TO_ARGS[@]}" -f "$REPLACE_STAGE" 2>/dev/null || \
+        kubectl create "${TO_ARGS[@]}" -f "$REPLACE_STAGE" 2>/dev/null || return 1
+      else
+        kubectl apply "${TO_ARGS[@]}" -f- || return 1
+      fi      
+    }
+
     [ ! -z "$SYNC_BY_LABEL" ] || {
       log INFO "sync $TARGET: $TARGET_NAMESPACE -> $TO_NAMESPACE"
-      jq -e '.[]'"|$FILTER" "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
+      jq -e '.[]'"|$FILTER" "$STAGE" | do_apply || return 1
       return 0
     }  
     FILTER="$FILTER"'|del(
@@ -234,6 +249,7 @@ kubesync(){
       .metadata.annotations[env.SYNC_BY_LABEL],
       .metadata.annotations[env.SYNC_BY_LABEL+".kubesync"]
     )'
+
     export SYNC_BY_LABEL
     export SYNC_CHECKSUM="$(jq -Sc "map($FILTER)" "$STAGE" | md5sum | cut -d' ' -f-1)"
     export SYNC_STATE="$(jq -Sc '.[]|.metadata.namespace as $namespace | { 
@@ -258,7 +274,7 @@ kubesync(){
 
     jq -e '.create + .update | length == 0'<<<"$SYNC_STATE">/dev/null || \
     jq --argjson state "$SYNC_STATE" -e '.[]'"|$FILTER"'
-      | .metadata.namespace = ($state.create[], $state.update[])' "$STAGE" | kubectl apply "${TO_ARGS[@]}" -f- || return 1
+      | .metadata.namespace = ($state.create[], $state.update[])' "$STAGE" | do_apply || return 1
 
     jq -e '.destroy | length == 0'<<<"$SYNC_STATE">/dev/null || \
     jq --argjson state "$SYNC_STATE" -e '.[]'"|$FILTER"'

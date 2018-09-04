@@ -37,6 +37,9 @@ sync examples
 # --patch to apply jq filter
 ./kubesync.sh --to-namespace default-copy secrets --patch '.metadata.annotations["patched"]=""'
 
+# do 'kubectl create/replace' instead of 'kubectl apply'
+./kubesync.sh --to-namespace default-copy secrets --replace
+
 ```
 
 `--by-label` examples
