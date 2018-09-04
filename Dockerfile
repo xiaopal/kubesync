@@ -9,5 +9,4 @@ RUN apk add --no-cache bash coreutils curl openssh-client openssl git findutils 
 ADD kubesync.sh /usr/local/kubesync.sh
 RUN chmod 755 /usr/local/kubesync.sh && ln -s /usr/local/kubesync.sh /usr/local/bin/kubesync
 
-ENTRYPOINT [ "/usr/local/bin/dumb-init" ]
-CMD [ "kubesync" ]
+ENTRYPOINT [ "/usr/local/bin/dumb-init", "kubesync" ]
