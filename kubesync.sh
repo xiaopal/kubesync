@@ -316,7 +316,7 @@ kubesync(){
   [ -z "$WATCH_LIST" ] && [ -z "$WATCH_ONLY" ] || (
       export WAIT_STAGE="$(mktemp -d)" && trap "rm -rf '$WAIT_STAGE'" EXIT
       log INFO "watching resources...${SYNC_ALL_NAMESPACES:+(all namespaces)}"
-      visit_fetch do_sync "$WAIT_STAGE" < <(kubectl get "${LIST_ARGS[@]}" --watch-only "${FETCH_ARGS[@]}") || {
+      visit_fetch do_sync "$WAIT_STAGE" < <(while true; do kubectl get "${LIST_ARGS[@]}" --watch-only "${FETCH_ARGS[@]}"; done) || {
         log ERR "Failed to sync resources"
         exit 1
       }

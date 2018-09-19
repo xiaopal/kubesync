@@ -88,3 +88,6 @@ EOF
 ./kubesync.sh --namespace default --by-label 'kubesync/copy-to' --owner-refs secrets --watch --all-namespaces
 
 ```
+
+
+
